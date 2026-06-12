@@ -2739,14 +2739,18 @@ class SynthesizeAppV2:
         style.configure("Section.TLabel", font=("맑은 고딕", 10, "bold"), foreground="#2c3e50")
         # 테이블명 Entry는 ttk가 아닌 tk.Entry로 만들어 bg를 직접 지정 (vista 테마 호환성)
 
+        # 세로가 좁은 화면(13인치 등)에서는 섹션 패딩을 줄여 본문 공간 확보
+        _pad = 8 if getattr(self, '_win_h', 1000) >= 850 else 4
+
         # ── 파일별 sub-tab은 FileTabBar(커스텀 tk.Button 기반)로 색상 강제 적용 ──
         # ttk.Notebook은 Windows 네이티브 테마가 탭 배경을 가로채서 색이 안 먹음.
 
-        # ── 로고 ──
+        # ── 로고 ── (세로가 좁은 화면에서는 생략해 본문 공간 확보)
         self._logo_image = None
         try:
             logo_path = _resource_path("logo.png")
-            if os.path.exists(logo_path) and HAS_PIL:
+            if (os.path.exists(logo_path) and HAS_PIL
+                    and getattr(self, '_win_h', 1000) >= 900):
                 img = Image.open(logo_path)
                 target_w = max(600, getattr(self, '_win_w', 1280) - 10)
                 ratio = target_w / img.width
@@ -2765,7 +2769,7 @@ class SynthesizeAppV2:
         bottom_frame = ttk.Frame(self.root)
         bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5)
 
-        sec_save = ttk.LabelFrame(bottom_frame, text="  ⑤ 저장 설정  ", padding=8)
+        sec_save = ttk.LabelFrame(bottom_frame, text="  ⑤ 저장 설정  ", padding=_pad)
         sec_save.pack(fill=tk.X, pady=(2, 2))
 
         rs1 = ttk.Frame(sec_save); rs1.pack(fill=tk.X)
@@ -2774,7 +2778,7 @@ class SynthesizeAppV2:
             side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         ttk.Button(rs1, text="폴더 선택...", command=self._browse_dir).pack(side=tk.LEFT)
 
-        sec_run = ttk.LabelFrame(bottom_frame, text="  ⑥ 실행 로그  ", padding=8)
+        sec_run = ttk.LabelFrame(bottom_frame, text="  ⑥ 실행 로그  ", padding=_pad)
         sec_run.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
 
         bf = ttk.Frame(sec_run); bf.pack(fill=tk.X, pady=(0, 5))
@@ -2800,7 +2804,7 @@ class SynthesizeAppV2:
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(5, 0))
 
         # ── ① 엑셀 파일 추가 ──
-        sec_files = ttk.LabelFrame(top_frame, text="  ① 엑셀 파일 추가 (여러 개 가능)  ", padding=8)
+        sec_files = ttk.LabelFrame(top_frame, text="  ① 엑셀 파일 추가 (여러 개 가능)  ", padding=_pad)
         sec_files.pack(fill=tk.X, pady=(0, 5))
 
         rfb = ttk.Frame(sec_files); rfb.pack(fill=tk.X)
@@ -2825,7 +2829,7 @@ class SynthesizeAppV2:
         self.file_listbox.bind('<Double-Button-1>', self._on_file_double_click)
 
         # ── ② 공통 설정 (사번 + 행수 + k-익명성) ──
-        sec_common = ttk.LabelFrame(top_frame, text="  ② 공통 설정  ", padding=8)
+        sec_common = ttk.LabelFrame(top_frame, text="  ② 공통 설정  ", padding=_pad)
         sec_common.pack(fill=tk.X, pady=(0, 5))
 
         rc1 = ttk.Frame(sec_common); rc1.pack(fill=tk.X)
@@ -2980,7 +2984,8 @@ class SynthesizeAppV2:
     def _build_step_indicator(self, parent):
         """상단 진행 단계 표시 바를 만든다 (5단계 라벨 + 화살표 + 힌트)."""
         step_frame = tk.Frame(parent, bg="#f0f4f8", relief="ridge", bd=1)
-        step_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 3), ipady=5, padx=5)
+        _ipady = 5 if getattr(self, '_win_h', 1000) >= 850 else 1
+        step_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 3), ipady=_ipady, padx=5)
 
         inner = tk.Frame(step_frame, bg="#f0f4f8")
         inner.pack(anchor='center')
@@ -3502,8 +3507,9 @@ class SynthesizeAppV2:
         tab = self.col_inner_notebook.new_tab(tab_label)
         fd.tab_frame = tab
 
-        # 분석 요약 텍스트
-        fd.analysis_text = tk.Text(tab, height=3, font=("Consolas", 9),
+        # 분석 요약 텍스트 (세로 좁은 화면은 2줄로 축소)
+        _sum_h = 3 if getattr(self, '_win_h', 1000) >= 850 else 2
+        fd.analysis_text = tk.Text(tab, height=_sum_h, font=("Consolas", 9),
                                     bg="#f5f5f0", state=tk.DISABLED, wrap=tk.WORD)
         fd.analysis_text.pack(fill=tk.X, pady=(0, 4))
 
@@ -3995,16 +4001,19 @@ class SynthesizeAppV2:
             self.root.clipboard_append(prompt)
             self.root.update_idletasks()
         except tk.TclError:
-            messagebox.showerror("복사 실패", "클립보드에 접근할 수 없습니다.")
+            messagebox.showerror("복사 실패", "클립보드에 접근할 수 없습니다.",
+                                 parent=self.root)
             return
         self.status_lbl.config(
             text=f"{fd.file_name}: 컬럼 {len(cols)}개 + 질문 프롬프트 복사 완료 (클립보드)")
+        # parent 지정 — 팝업이 메인 창 뒤로 숨어 '멈춘 것처럼' 보이는 현상 방지
         messagebox.showinfo("AI 질문 프롬프트 복사 완료",
             f"컬럼 {len(cols)}개와 질문 프롬프트를 함께 복사했습니다.\n"
             f"AI 채팅창(Claude/ChatGPT 등)에 그대로 붙여넣으세요.\n"
             f"AI가 '컬럼명: 설명' 형식으로 답하면, 그 답변을 복사해\n"
             f"'📥 AI 답변 설명 일괄 붙여넣기'로 입력하면 됩니다.\n\n"
-            f"--- 미리보기 ---\n{prompt[:260]} ...")
+            f"--- 미리보기 ---\n{prompt[:260]} ...",
+            parent=self.root)
 
     def _parse_description_block(self, fd, text):
         """붙여넣은 텍스트 블록을 {원본컬럼: 설명} 매핑으로 파싱.
@@ -4090,15 +4099,42 @@ class SynthesizeAppV2:
         """AI 채팅 답변(컬럼 설명)을 한 번에 붙여넣어 설명란을 일괄 채우는 대화상자."""
         if fd.df is None or fd.analysis_text is None:
             messagebox.showwarning("안내",
-                "먼저 이 파일을 분석한 뒤 사용하세요.")
+                "먼저 이 파일을 분석한 뒤 사용하세요.", parent=self.root)
             return
         cols = list(fd.df.columns)
 
         dlg = tk.Toplevel(self.root)
         dlg.title("AI 답변 설명 일괄 붙여넣기")
         dlg.transient(self.root)
-        dlg.grab_set()
-        dlg.geometry("660x540")
+
+        # ── 메인 창 중앙에 강제 배치 + 화면 안으로 클램프 ──
+        # (모달 창이 메인 창 뒤/화면 밖에 떠서 앱 전체가 '멈춘 것처럼' 잠기는 현상 방지)
+        dw, dh = 660, 520
+        self.root.update_idletasks()
+        try:
+            rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+            rw, rh = self.root.winfo_width(), self.root.winfo_height()
+            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            dx = max(0, min(rx + (rw - dw) // 2, sw - dw))
+            dy = max(0, min(ry + (rh - dh) // 2, sh - dh - 40))
+        except tk.TclError:
+            dx, dy = 100, 80
+        dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
+
+        # 맨 앞으로 끌어올리기 (잠깐 topmost 후 해제)
+        dlg.lift()
+        dlg.attributes('-topmost', True)
+        dlg.after(300, lambda: dlg.attributes('-topmost', False))
+        dlg.bind('<Escape>', lambda _e: dlg.destroy())
+
+        # grab은 창이 실제로 보인 뒤에 — 비가시 상태 grab으로 인한 입력 잠김 방지
+        def _safe_grab():
+            try:
+                dlg.grab_set()
+                dlg.focus_force()
+            except tk.TclError:
+                pass
+        dlg.after(100, _safe_grab)
 
         info = (
             f"이 파일에는 컬럼이 {len(cols)}개 있습니다.\n"
@@ -4151,7 +4187,7 @@ class SynthesizeAppV2:
             self.status_lbl.config(
                 text=f"{fd.file_name}: 설명 {applied}개 일괄 입력 완료")
             messagebox.showinfo("적용 완료",
-                f"{applied}개 컬럼 설명을 입력했습니다.")
+                f"{applied}개 컬럼 설명을 입력했습니다.", parent=self.root)
 
         btn_bar = ttk.Frame(dlg)
         btn_bar.pack(fill=tk.X, padx=12, pady=(0, 12))
