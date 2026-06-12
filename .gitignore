@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 자격증명 / 비밀 (앱 비밀번호 등) — 절대 커밋 금지
+.env
+
+# 빌드/임시 산출물
+dist/
+build/
+*.spec
+*.zip
+_attach_b64.txt
+result/
+
+# bkit 플러그인 로컬 상태
+.bkit/
+
+# OS
+Thumbs.db
+.DS_Store
