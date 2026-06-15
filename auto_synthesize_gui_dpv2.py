@@ -20,7 +20,7 @@ v2: 다중 엑셀 파일 일괄 마스킹 + 컬럼 관계 자동 추천 + 사번
     python auto_synthesize_gui_dpv2.py
 """
 
-import os, sys, json, warnings, threading, re
+import os, sys, json, warnings, threading, re, subprocess
 from datetime import datetime
 from collections import defaultdict
 from difflib import SequenceMatcher
@@ -2740,7 +2740,8 @@ class SynthesizeAppV2:
         # 테이블명 Entry는 ttk가 아닌 tk.Entry로 만들어 bg를 직접 지정 (vista 테마 호환성)
 
         # 세로가 좁은 화면(13인치 등)에서는 섹션 패딩을 줄여 본문 공간 확보
-        _pad = 8 if getattr(self, '_win_h', 1000) >= 850 else 4
+        _pad = 8 if getattr(self, '_win_h', 1000) >= 850 else (
+            4 if getattr(self, '_win_h', 1000) >= 700 else 2)
 
         # ── 파일별 sub-tab은 FileTabBar(커스텀 tk.Button 기반)로 색상 강제 적용 ──
         # ttk.Notebook은 Windows 네이티브 테마가 탭 배경을 가로채서 색이 안 먹음.
@@ -2793,7 +2794,8 @@ class SynthesizeAppV2:
 
         # 세로가 좁은 화면에서는 로그 높이를 줄여 본문(노트북) 공간을 확보
         _wh = getattr(self, '_win_h', 1000)
-        _log_h = 7 if _wh >= 950 else (5 if _wh >= 830 else 3)
+        _log_h = 7 if _wh >= 950 else (
+            5 if _wh >= 830 else (3 if _wh >= 700 else (2 if _wh >= 640 else 1)))
         self.log_text = scrolledtext.ScrolledText(sec_run, height=_log_h,
                                                    font=("Consolas", 9),
                                                    state=tk.DISABLED, wrap=tk.WORD)
@@ -2817,7 +2819,7 @@ class SynthesizeAppV2:
                   style="Sub.TLabel").pack(side=tk.LEFT, padx=(15, 0))
 
         list_frame = ttk.Frame(sec_files); list_frame.pack(fill=tk.X, pady=(4, 0))
-        _list_h = 4 if getattr(self, '_win_h', 1000) >= 880 else 3
+        _list_h = 4 if _wh >= 880 else (3 if _wh >= 700 else 2)
         self.file_listbox = tk.Listbox(list_frame, height=_list_h, font=("Consolas", 9),
                                        selectmode=tk.SINGLE, activestyle='dotbox')
         self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -3014,10 +3016,13 @@ class SynthesizeAppV2:
             lbl.pack(side=tk.LEFT, padx=2)
             self.step_labels.append(lbl)
 
-        # 힌트는 단계 라벨 아래 별도 줄에 배치 — 작은 화면 가로 넘침 방지
+        # 힌트는 단계 라벨 아래 별도 줄에 배치 — 작은 화면 가로 넘침 방지.
+        # 매우 좁은 화면(<660)에서는 힌트 줄을 숨겨(미배치) 노트북 공간을 확보한다.
+        # (위젯 자체는 생성해 둬야 _set_step/_do_blink 가 참조 시 안전)
         self.step_hint = tk.Label(step_frame, text="", font=("맑은 고딕", 9, "bold"),
                                    bg="#f0f4f8", fg="#e74c3c")
-        self.step_hint.pack(side=tk.TOP, pady=(2, 0))
+        if getattr(self, '_win_h', 1000) >= 660:
+            self.step_hint.pack(side=tk.TOP, pady=(2, 0))
 
     def _set_step(self, step_num):
         """현재 진행 단계를 갱신 — 라벨 색상/화살표 색상/힌트 텍스트 적용.
@@ -3507,8 +3512,9 @@ class SynthesizeAppV2:
         tab = self.col_inner_notebook.new_tab(tab_label)
         fd.tab_frame = tab
 
-        # 분석 요약 텍스트 (세로 좁은 화면은 2줄로 축소)
-        _sum_h = 3 if getattr(self, '_win_h', 1000) >= 850 else 2
+        # 분석 요약 텍스트 (세로 좁은 화면은 축소 — 확정 버튼/본문 공간 확보)
+        _wh = getattr(self, '_win_h', 1000)
+        _sum_h = 3 if _wh >= 850 else (2 if _wh >= 700 else 1)
         fd.analysis_text = tk.Text(tab, height=_sum_h, font=("Consolas", 9),
                                     bg="#f5f5f0", state=tk.DISABLED, wrap=tk.WORD)
         fd.analysis_text.pack(fill=tk.X, pady=(0, 4))
@@ -3987,33 +3993,138 @@ class SynthesizeAppV2:
         return prompt, csv_line, cols
 
     def _copy_columns_csv(self, fd):
-        """이 파일의 컬럼 목록 + AI 질문 프롬프트를 한 번에 클립보드에 복사.
+        """컬럼 목록 + AI 질문 프롬프트를 '복사 가능한 창'으로 띄우고 자동 복사 시도.
 
-        사용자가 Claude/ChatGPT 채팅창에 그대로 붙여넣으면 되도록,
-        '컬럼명: 설명' 형식 답변을 요청하는 프롬프트까지 포함한다.
-        AI 답변은 다시 복사해 '📥 AI 답변 설명 일괄 붙여넣기'로 입력한다.
+        [멈춤(hang) 대응 — 중요]
+        예전에는 버튼 클릭 시 메인 스레드에서 곧바로 Tk 클립보드
+        (clipboard_clear/append)를 호출했다. 사내 보안/DLP가 클립보드
+        접근을 가로채면 이 호출에서 **앱 전체가 얼어붙는다**(예외가 아닌
+        '멈춤'이라 try/except로도 못 막음). 그래서 이제는:
+          1) 클립보드 호출이 전혀 없는 '선택 가능한 텍스트 창'을 먼저 띄운다
+             → 어떤 환경에서도 메인 스레드가 멈추지 않는다.
+          2) 자동 복사는 백그라운드 스레드에서 clip.exe로 시도한다(타임아웃).
+             → 보안 프로그램이 막아도 UI는 얼지 않는다.
+          3) 자동 복사가 실패해도, 창의 텍스트가 이미 전체 선택돼 있어
+             사용자가 Ctrl+C 또는 [📋 다시 복사]로 직접 복사할 수 있다.
+
+        참고: 복사되는 것은 '컬럼 이름 + 고정 질문 문구'뿐이라
+        업로드한 파일이 아무리 커도 복사량/속도와는 무관하다.
         """
         if fd.df is None:
             return
         prompt, csv_line, cols = self._build_ai_prompt(fd)
-        try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(prompt)
-            self.root.update_idletasks()
-        except tk.TclError:
-            messagebox.showerror("복사 실패", "클립보드에 접근할 수 없습니다.",
-                                 parent=self.root)
-            return
+        n = len(cols)
+        # 1) 멈출 일이 없는 텍스트 창을 먼저 띄운다
+        self._show_copyable_prompt(fd, prompt, cols)
+        # 2) 자동 복사는 백그라운드에서 best-effort
         self.status_lbl.config(
-            text=f"{fd.file_name}: 컬럼 {len(cols)}개 + 질문 프롬프트 복사 완료 (클립보드)")
-        # parent 지정 — 팝업이 메인 창 뒤로 숨어 '멈춘 것처럼' 보이는 현상 방지
-        messagebox.showinfo("AI 질문 프롬프트 복사 완료",
-            f"컬럼 {len(cols)}개와 질문 프롬프트를 함께 복사했습니다.\n"
-            f"AI 채팅창(Claude/ChatGPT 등)에 그대로 붙여넣으세요.\n"
-            f"AI가 '컬럼명: 설명' 형식으로 답하면, 그 답변을 복사해\n"
-            f"'📥 AI 답변 설명 일괄 붙여넣기'로 입력하면 됩니다.\n\n"
-            f"--- 미리보기 ---\n{prompt[:260]} ...",
-            parent=self.root)
+            text=f"{fd.file_name}: 프롬프트 창 열림 — 자동 복사 시도 중…")
+
+        def _done(ok):
+            if ok:
+                self.status_lbl.config(
+                    text=f"{fd.file_name}: 컬럼 {n}개 + 질문 프롬프트 복사 완료(클립보드)")
+            else:
+                self.status_lbl.config(
+                    text=f"{fd.file_name}: 자동 복사 실패 — 열린 창에서 Ctrl+C로 직접 복사하세요")
+        self._clipboard_set_bg(prompt, _done)
+
+    def _clipboard_set_bg(self, text, on_done):
+        """clip.exe로 백그라운드 클립보드 복사. on_done(ok)는 메인 스레드에서 호출.
+
+        별도 스레드 + 타임아웃이라 보안 프로그램이 클립보드를 막아도
+        메인 UI(이벤트 루프)는 절대 멈추지 않는다.
+        한글 Windows 콘솔 코드페이지로 인코딩하여 한글이 깨지지 않게 한다.
+        (정확한 유니코드 복사가 필요하면 열린 창에서 Ctrl+C 사용)
+        """
+        def worker():
+            ok = False
+            try:
+                import locale
+                enc = locale.getpreferredencoding(False) or 'cp949'
+                data = text.replace('\r\n', '\n').replace('\n', '\r\n').encode(
+                    enc, errors='replace')
+                proc = subprocess.run(
+                    ['clip'], input=data, timeout=3, check=False,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                ok = (proc.returncode == 0)
+            except Exception:
+                ok = False
+            try:
+                self.root.after(0, lambda: on_done(ok))
+            except Exception:
+                pass
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_copyable_prompt(self, fd, prompt, cols):
+        """프롬프트를 '선택 가능한 텍스트 창'으로 띄운다(클립보드 호출 없음 → 안 멈춤).
+
+        텍스트는 미리 전체 선택 + 포커스되어 Ctrl+C로 바로 복사할 수 있다.
+        위젯 빌드를 try/except로 감싸 빈 창(이슈2 유형)을 방지한다.
+        """
+        try:
+            dlg = tk.Toplevel(self.root)
+            dlg.title("AI 질문 프롬프트 복사")
+            dlg.transient(self.root)
+
+            dw, dh = 680, 480
+            self.root.update_idletasks()
+            try:
+                rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+                rw, rh = self.root.winfo_width(), self.root.winfo_height()
+                sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+                dx = max(0, min(rx + (rw - dw) // 2, sw - dw))
+                dy = max(0, min(ry + (rh - dh) // 2, sh - dh - 40))
+            except tk.TclError:
+                dx, dy = 100, 80
+            dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
+            dlg.bind('<Escape>', lambda _e: dlg.destroy())
+
+            info = (
+                f"컬럼 {len(cols)}개 + 질문 프롬프트입니다. 자동으로 클립보드 복사를 시도합니다.\n"
+                "복사가 안 되면(사내 보안 등) 아래 텍스트가 이미 전체 선택돼 있으니 "
+                "Ctrl+C 로 직접 복사하거나 [📋 다시 복사]를 누르세요.\n"
+                "이 프롬프트를 AI 채팅창(Claude/ChatGPT 등)에 붙여넣고, AI가 "
+                "'컬럼명: 설명' 형식으로 답하면 그 답변을 복사해 "
+                "[📥 AI 답변 설명 일괄 붙여넣기]로 입력하세요."
+            )
+            ttk.Label(dlg, text=info, justify='left', font=("맑은 고딕", 9),
+                      wraplength=dw - 28).pack(fill=tk.X, padx=12, pady=(10, 6))
+
+            txt = scrolledtext.ScrolledText(dlg, height=14, font=("맑은 고딕", 10),
+                                            wrap=tk.WORD)
+            txt.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
+            txt.insert("1.0", prompt)
+            txt.tag_add(tk.SEL, "1.0", "end-1c")
+            txt.mark_set(tk.INSERT, "1.0")
+            txt.focus_set()
+
+            status = ttk.Label(dlg, text="", font=("맑은 고딕", 9, "bold"))
+            status.pack(fill=tk.X, padx=12, pady=(0, 2))
+
+            def _recopy():
+                status.config(text="복사 시도 중…", foreground="#555555")
+
+                def _r(ok):
+                    if ok:
+                        status.config(text="✅ 클립보드에 복사했습니다.",
+                                      foreground="#27ae60")
+                    else:
+                        status.config(text="복사 실패 — Ctrl+C로 직접 복사하세요.",
+                                      foreground="#c0392b")
+                self._clipboard_set_bg(txt.get("1.0", "end-1c"), _r)
+
+            btn = ttk.Frame(dlg)
+            btn.pack(fill=tk.X, padx=12, pady=(0, 12))
+            ttk.Button(btn, text="📋 다시 복사", command=_recopy).pack(side=tk.LEFT)
+            ttk.Button(btn, text="닫기", command=dlg.destroy).pack(side=tk.RIGHT)
+
+            dlg.lift()
+            dlg.attributes('-topmost', True)
+            dlg.after(300, lambda: dlg.attributes('-topmost', False))
+        except Exception as e:
+            messagebox.showerror("프롬프트 창 오류",
+                f"복사 창을 여는 중 문제가 발생했습니다:\n{e}", parent=self.root)
 
     def _parse_description_block(self, fd, text):
         """붙여넣은 텍스트 블록을 {원본컬럼: 설명} 매핑으로 파싱.
@@ -4106,35 +4217,13 @@ class SynthesizeAppV2:
         dlg = tk.Toplevel(self.root)
         dlg.title("AI 답변 설명 일괄 붙여넣기")
         dlg.transient(self.root)
-
-        # ── 메인 창 중앙에 강제 배치 + 화면 안으로 클램프 ──
-        # (모달 창이 메인 창 뒤/화면 밖에 떠서 앱 전체가 '멈춘 것처럼' 잠기는 현상 방지)
-        dw, dh = 660, 520
-        self.root.update_idletasks()
-        try:
-            rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-            rw, rh = self.root.winfo_width(), self.root.winfo_height()
-            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-            dx = max(0, min(rx + (rw - dw) // 2, sw - dw))
-            dy = max(0, min(ry + (rh - dh) // 2, sh - dh - 40))
-        except tk.TclError:
-            dx, dy = 100, 80
-        dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
-
-        # 맨 앞으로 끌어올리기 (잠깐 topmost 후 해제)
-        dlg.lift()
-        dlg.attributes('-topmost', True)
-        dlg.after(300, lambda: dlg.attributes('-topmost', False))
         dlg.bind('<Escape>', lambda _e: dlg.destroy())
+        # geometry/topmost/grab 은 위젯을 모두 빌드한 뒤(맨 아래)에 적용한다.
+        # (빌드 전에 적용하면 일부 환경에서 레이아웃이 깨져 '빈 창'으로 보이는 현상 방지)
 
-        # grab은 창이 실제로 보인 뒤에 — 비가시 상태 grab으로 인한 입력 잠김 방지
-        def _safe_grab():
-            try:
-                dlg.grab_set()
-                dlg.focus_force()
-            except tk.TclError:
-                pass
-        dlg.after(100, _safe_grab)
+        # 세로 좁은 화면(13인치 등)에서도 화면을 벗어나지 않도록 입력칸 높이 적응
+        _sh_now = self.root.winfo_screenheight()
+        _txt_h = 12 if _sh_now >= 800 else (8 if _sh_now >= 680 else 6)
 
         info = (
             f"이 파일에는 컬럼이 {len(cols)}개 있습니다.\n"
@@ -4148,7 +4237,7 @@ class SynthesizeAppV2:
         ttk.Label(dlg, text=info, justify='left',
                   font=("맑은 고딕", 9)).pack(fill=tk.X, padx=12, pady=(10, 6))
 
-        txt = scrolledtext.ScrolledText(dlg, height=12, font=("맑은 고딕", 10),
+        txt = scrolledtext.ScrolledText(dlg, height=_txt_h, font=("맑은 고딕", 10),
                                         wrap=tk.WORD)
         txt.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
         txt.focus_set()
@@ -4197,6 +4286,41 @@ class SynthesizeAppV2:
                    command=_do_apply).pack(side=tk.RIGHT)
         ttk.Button(btn_bar, text="취소",
                    command=dlg.destroy).pack(side=tk.RIGHT, padx=(0, 6))
+
+        # ── 위젯을 모두 빌드한 뒤: 크기·위치·표시 적용 ──
+        # 창 크기를 화면 안에 들어오도록 적응적으로 계산(세로 좁은 화면 대응).
+        dlg.update_idletasks()
+        dw = 660
+        # 빌드된 위젯이 요구하는 높이를 우선 반영하되, 화면을 넘지 않게 클램프
+        try:
+            need_h = dlg.winfo_reqheight()
+        except tk.TclError:
+            need_h = 520
+        try:
+            rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+            rw, rh = self.root.winfo_width(), self.root.winfo_height()
+            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            dh = max(360, min(need_h, sh - 80))
+            dx = max(0, min(rx + (rw - dw) // 2, sw - dw))
+            dy = max(0, min(ry + (rh - dh) // 2, sh - dh - 40))
+        except tk.TclError:
+            dh, dx, dy = 520, 100, 60
+        dlg.geometry(f"{dw}x{dh}+{dx}+{dy}")
+        dlg.update_idletasks()  # 위젯이 실제로 그려지도록 강제
+
+        # 맨 앞으로 끌어올리기 (잠깐 topmost 후 해제)
+        dlg.lift()
+        dlg.attributes('-topmost', True)
+        dlg.after(300, lambda: dlg.attributes('-topmost', False))
+
+        # grab은 창이 실제로 보인 뒤에 — 비가시 상태 grab으로 인한 입력 잠김 방지
+        def _safe_grab():
+            try:
+                dlg.grab_set()
+                dlg.focus_force()
+            except tk.TclError:
+                pass
+        dlg.after(120, _safe_grab)
 
     def _apply_column_rename(self, fd):
         """컬럼명 변경 Entry 값을 fd.rename_values에 저장 + 중복 검사.
